@@ -226,7 +226,7 @@
     （两版记录取标签核对对象，即新版配方）的<b>最终过敏原集合</b>；为涉及的每种过敏原配置
     清洁分钟数后，按「前一产品含有、后一产品不含」计算<b>有向换线成本</b>，以子集动态规划求
     <b>总清洁时间最短</b>的完整生产顺序（并列时按产品 ID 序列取最小）。处于「需复核」状态的
-    记录<b>禁止参与</b>（原因见列表），请先在「⑧ 历史审查记录」完成字典时效复核。
+    记录<b>禁止参与</b>（原因见列表），请先在「⑨ 历史审查记录」完成字典时效复核。
     本预览<b>不会</b>改写任何审查记录。</p>
   <div id="changeover-products"><p class="hint">加载中…</p></div>
   <div id="changeover-minutes-wrap" class="hidden">
@@ -240,8 +240,29 @@
   <div id="changeover-result"></div>
 </section>
 
+<section>
+  <h2>⑦ 共用标签模板分组 <span class="pill gray">临时预览</span></h2>
+  <p class="hint">从历史审查记录中勾选 <b>2～12 个</b>时效正常的产品：系统复用各记录<b>当前配方</b>
+    （两版记录取标签核对对象，即新版配方）的<b>最终过敏原集合</b>；一组产品共用一张标签模板，
+    模板内容 = 组内产品过敏原<b>并集</b>，每个产品的<b>附加声明</b>为「模板含有而自身没有」的过敏原，
+    仅当组内每个产品的附加声明数都不超过其上限时该组才成立。后端用<b>子集动态规划</b>求
+    <b>模板数量最少</b>的完整分组，并列时按组内及组间产品 ID 序列取唯一最小者。缺失或
+    「需复核」记录<b>禁止参与</b>（原因见列表），请先在「⑨ 历史审查记录」完成字典时效复核。
+    本预览<b>不会</b>改写任何审查记录。</p>
+  <div id="tpl-products"><p class="hint">加载中…</p></div>
+  <div id="tpl-limits-wrap" class="hidden">
+    <label>每个产品最多允许的附加声明数量（按所选产品生成，预填 1 个，可逐个修改；未填写按 0 个计）</label>
+    <div id="tpl-limits" class="minutes-grid"></div>
+  </div>
+  <div class="toolbar">
+    <button onclick="submitTemplateGroup()">计算最少模板分组</button>
+    <span id="tpl-msg" class="error"></span>
+  </div>
+  <div id="tpl-result"></div>
+</section>
+
 <section id="result-section" class="hidden">
-  <h2>⑦ 审查结果 <span id="result-title" class="hint"></span></h2>
+  <h2>⑧ 审查结果 <span id="result-title" class="hint"></span></h2>
   <div id="recheck-bar"></div>
   <div id="recheck-panel" class="recheck-panel hidden"></div>
   <div id="result-body"></div>
@@ -252,7 +273,7 @@
 </section>
 
 <section>
-  <h2>⑧ 历史审查记录</h2>
+  <h2>⑨ 历史审查记录</h2>
   <div id="history-table"><p class="hint">暂无记录</p></div>
 </section>
 
@@ -562,6 +583,7 @@ async function loadHistory() {
   if (!reviews.length) {
     $('history-table').innerHTML = '<p class="hint">暂无记录</p>';
     await loadChangeoverProducts();  // 换线排程候选列表随记录变化一并刷新
+    await loadTemplateProducts();    // 模板分组候选列表同步刷新
     return;
   }
   const rows = reviews.map(r => {
@@ -588,6 +610,7 @@ async function loadHistory() {
   $('history-table').innerHTML =
     `<table><tr><th>ID</th><th>名称</th><th>类型</th><th>结论</th><th>字典时效</th><th>时间</th><th>操作</th></tr>${rows}</table>`;
   await loadChangeoverProducts();  // 换线排程候选列表随记录 / 字典时效变化一并刷新
+  await loadTemplateProducts();    // 模板分组候选列表同步刷新
 }
 
 async function viewReview(id) {
@@ -1110,6 +1133,158 @@ function renderChangeoverResult(r) {
     <p class="hint">首产产品无换线清洁；换线成本按「前一产品含有、后一产品不含」的过敏原
       清洁分钟数求和。本结果仅为预览，未改写任何审查记录。</p></div>`;
   $('changeover-result').scrollIntoView({behavior: 'smooth'});
+}
+
+/* ---------- 共用标签模板分组（临时预览） ---------- */
+let tplProducts = [];
+let tplSelected = new Set();
+let tplLimits = {};   // 产品ID -> 附加声明上限输入框当前值（跨渲染保留）
+const TPL_DEFAULT_MAX_EXTRA = 1;
+
+async function loadTemplateProducts() {
+  try {
+    const d = await api('/api/template-group/products');
+    tplProducts = d.products;
+    renderTemplateProducts();
+  } catch (e) {
+    $('tpl-products').innerHTML =
+      `<p class="error">候选产品加载失败：${esc(e.message)}</p>`;
+  }
+}
+
+function renderTemplateProducts() {
+  const wrap = $('tpl-products');
+  if (!tplProducts.length) {
+    wrap.innerHTML = '<p class="hint">暂无历史审查记录，请先在「③ 新建标签审查」创建。</p>';
+    renderTplLimits();
+    return;
+  }
+  // 仅保留仍然存在且可参与的勾选
+  const eligible = new Set(tplProducts.filter(p => p.eligible).map(p => p.id));
+  tplSelected = new Set([...tplSelected].filter(id => eligible.has(id)));
+  const rows = tplProducts.map(p => {
+    const allergens = p.allergens.length
+      ? p.allergens.map(a => `<span class="badge">${esc(a)}</span>`).join('')
+      : '<span class="hint">无过敏原</span>';
+    const cb = p.eligible
+      ? `<input type="checkbox" value="${p.id}" ${tplSelected.has(p.id) ? 'checked' : ''} onchange="onTplSelect()">`
+      : `<input type="checkbox" disabled title="${esc(p.blocked_reason)}">`;
+    const state = p.eligible
+      ? '<span class="pill green" title="字典时效正常">可参与</span>'
+      : `<span class="pill orange" title="${esc(p.blocked_reason)}">禁止参与</span>`;
+    const note = p.eligible ? '' : `<div class="warn">⚠ ${esc(p.blocked_reason)}</div>`;
+    return `<tr><td>${cb}</td><td>#${p.id}</td><td>${esc(p.name)}${note}</td>
+      <td class="hint">${esc(p.source_version)}</td><td>${allergens}</td><td>${state}</td></tr>`;
+  }).join('');
+  wrap.innerHTML = `<table><tr><th style="width:40px">选择</th><th style="width:3.5em">ID</th>
+    <th>产品（审查记录）</th><th style="width:6.5em">取值版本</th>
+    <th>当前配方最终过敏原集合</th><th style="width:5.5em">状态</th></tr>${rows}</table>
+    <p class="hint">已选 <b id="tpl-count">${tplSelected.size}</b> 个（需 2～12 个）；
+      「取值版本」为记录的标签核对对象（两版记录即新版配方）。</p>`;
+  renderTplLimits();
+}
+
+function onTplSelect() {
+  tplSelected = new Set(
+    [...document.querySelectorAll('#tpl-products input[type=checkbox]:checked')]
+      .map(i => Number(i.value)));
+  const cnt = $('tpl-count');
+  if (cnt) cnt.textContent = tplSelected.size;
+  renderTplLimits();
+}
+
+function captureTplLimits() {
+  document.querySelectorAll('#tpl-limits input').forEach(i => {
+    tplLimits[i.dataset.pid] = i.value;
+  });
+}
+
+function renderTplLimits() {
+  captureTplLimits();
+  const wrap = $('tpl-limits-wrap');
+  const selected = tplProducts.filter(p => tplSelected.has(p.id))
+    .sort((a, b) => a.id - b.id);
+  if (!selected.length) {
+    wrap.classList.add('hidden');
+    $('tpl-limits').innerHTML = '';
+    return;
+  }
+  wrap.classList.remove('hidden');
+  $('tpl-limits').innerHTML = selected.map(p => {
+    const v = tplLimits[p.id] !== undefined
+      ? tplLimits[p.id] : TPL_DEFAULT_MAX_EXTRA;
+    return `<label><span>#${p.id} ${esc(p.name)}</span><input type="number" min="0" step="1"
+      value="${esc(String(v))}" data-pid="${p.id}"></label>`;
+  }).join('');
+}
+
+async function submitTemplateGroup() {
+  $('tpl-msg').textContent = '';
+  $('tpl-result').innerHTML = '';
+  captureTplLimits();
+  const ids = [...tplSelected];
+  if (ids.length < 2 || ids.length > 12) {
+    $('tpl-msg').textContent = `请勾选 2～12 个产品（当前 ${ids.length} 个）`;
+    return;
+  }
+  const maxExtra = {};
+  for (const pid of ids) {
+    const raw = tplLimits[pid];
+    const v = Number(raw);
+    if (raw === undefined || String(raw).trim() === ''
+        || !Number.isInteger(v) || v < 0) {
+      $('tpl-msg').textContent =
+        `产品 #${pid} 的附加声明上限无效（需为不小于 0 的整数）`;
+      return;
+    }
+    maxExtra[pid] = v;
+  }
+  try {
+    const r = await post('/api/template-group-preview',
+      {review_ids: ids, max_extra: maxExtra});
+    renderTemplateResult(r);
+  } catch (e) {
+    $('tpl-msg').textContent = e.message;
+    const problems = (e.detail && e.detail.problems) || [];
+    if (problems.length) {
+      $('tpl-result').innerHTML = `<div class="result-block"><h3>禁止参与的记录</h3>
+        <table><tr><th style="width:4em">ID</th><th>产品</th><th>原因</th></tr>
+        ${problems.map(p => `<tr><td>#${esc(String(p.id))}</td>
+          <td>${esc(p.name || '（未知）')}</td>
+          <td class="error">${esc(p.message)}</td></tr>`).join('')}</table></div>`;
+    }
+    await loadTemplateProducts();  // 刷新资格状态（记录可能刚被复核或删除）
+  }
+}
+
+function renderTemplateResult(r) {
+  const tie = r.optimal_count > 1
+    ? `<p class="hint">共有 ${r.optimal_count} 个模板数量相同的并列最优分组，已按组内及组间产品 ID 序列展示唯一确定者。</p>`
+    : '';
+  const groupsHtml = r.groups.map((g, gi) => {
+    const rows = g.members.map(m => {
+      const own = m.allergens.length
+        ? m.allergens.map(a => `<span class="badge">${esc(a)}</span>`).join('')
+        : '<span class="hint">无</span>';
+      const extra = m.extra.length
+        ? m.extra.map(a => `<span class="badge over">${esc(a)}</span>`).join('')
+        : '<span class="hint">无</span>';
+      return `<tr><td>#${m.id}</td><td>${esc(m.name)}</td><td>${own}</td>
+        <td>${extra}</td><td>${m.extra_count} / ${m.max_extra}</td></tr>`;
+    }).join('');
+    const template = g.template.length
+      ? g.template.map(a => `<span class="badge own">${esc(a)}</span>`).join('')
+      : '<span class="hint">无过敏原</span>';
+    return `<h4>模板 ${gi + 1}（${g.members.length} 个产品）：${template}</h4>
+      <table><tr><th style="width:4em">ID</th><th>产品</th><th>自身过敏原</th>
+      <th>附加声明</th><th style="width:8em">附加数 / 上限</th></tr>${rows}</table>`;
+  }).join('');
+  $('tpl-result').innerHTML = `<div class="result-block">
+    <h3>最少模板分组 <span class="pill green">共需 ${r.template_count} 张模板</span></h3>
+    ${tie}${groupsHtml}
+    <p class="hint">模板 = 组内产品过敏原并集；附加声明 = 模板含有而产品自身没有、需额外印上
+      标签的过敏原（附加数不超过上限才可成组）。本结果仅为预览，未改写任何审查记录。</p></div>`;
+  $('tpl-result').scrollIntoView({behavior: 'smooth'});
 }
 
 /* ---------- 示例 ---------- */

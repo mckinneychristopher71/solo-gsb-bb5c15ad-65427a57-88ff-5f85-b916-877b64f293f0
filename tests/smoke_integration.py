@@ -321,4 +321,67 @@ assert db.get_review(rid_alias)["needs_recheck"] is True
 assert len(db.list_reviews()) == 3
 print("9. 共线生产换线排程（候选资格/有向成本/子集DP/并列/禁止参与/只读） OK")
 
+# 10. 共用标签模板分组（临时预览，不改写审查记录）
+from app.template_group import (TemplateGroupError, build_grouping,
+                                build_template_group_preview,
+                                list_template_products)
+
+# 10a. 候选清单：rid_alias 需复核禁止参与；两版记录取新版配方最终过敏原集合
+tpl = {p["id"]: p for p in list_template_products()}
+assert tpl[rid_alias]["eligible"] is False
+assert "需复核" in tpl[rid_alias]["blocked_reason"]
+assert tpl[rid]["eligible"] and tpl[old_rid]["eligible"]
+assert tpl[rid]["source_version"] == "新版配方"
+assert set(tpl[rid]["allergens"]) == {"麸质谷物", "坚果", "蛋类", "芝麻", "大豆"}
+
+# 10b. 两条记录当前配方过敏原集合相同、上限均按 0 计 → 合并为 1 张模板
+before = db.get_review(rid)
+grp = build_template_group_preview([old_rid, rid], {})
+assert grp["template_count"] == 1 and grp["optimal_count"] == 1
+[g] = grp["groups"]
+assert [m["id"] for m in g["members"]] == sorted([old_rid, rid])
+assert g["template"] == tpl[rid]["allergens"]
+assert all(m["extra"] == [] and m["extra_count"] == 0 for m in g["members"])
+
+# 10c. 缺失 / 需复核记录禁止参与并逐条指出原因
+try:
+    build_template_group_preview([rid, rid_alias], {})
+    raise AssertionError("需复核记录应被拒绝")
+except TemplateGroupError as exc:
+    assert exc.problems and exc.problems[0]["reason"] == "stale"
+    assert "需复核" in exc.problems[0]["message"]
+try:
+    build_template_group_preview([rid, 999999], {})
+    raise AssertionError("缺失记录应被拒绝")
+except TemplateGroupError as exc:
+    assert exc.problems[0]["reason"] == "missing"
+
+# 10d. 子集 DP（纯计算）：模板 = 并集、附加声明超限不可成组、并列按 ID 序列
+prods = [
+    {"id": 1, "name": "甲", "allergens": ["乳"]},
+    {"id": 2, "name": "乙", "allergens": ["乳", "大豆"]},
+    {"id": 3, "name": "丙", "allergens": ["大豆"]},
+]
+r = build_grouping(prods, {1: 1, 2: 0, 3: 0})
+assert r["template_count"] == 2 and r["optimal_count"] == 1
+assert [[m["id"] for m in g["members"]] for g in r["groups"]] == [[1, 2], [3]]
+assert r["groups"][0]["template"] == ["乳", "大豆"]
+assert r["groups"][0]["members"][0]["extra"] == ["大豆"]
+# 2×2 结构：{{1,2},{3,4}} 与 {{1,3},{2,4}} 并列，按组间 ID 序列取前者
+grid = [
+    {"id": 1, "name": "P1", "allergens": ["乳", "芝麻"]},
+    {"id": 2, "name": "P2", "allergens": ["乳", "坚果"]},
+    {"id": 3, "name": "P3", "allergens": ["大豆", "芝麻"]},
+    {"id": 4, "name": "P4", "allergens": ["大豆", "坚果"]},
+]
+r = build_grouping(grid, {1: 1, 2: 1, 3: 1, 4: 1})
+assert r["template_count"] == 2 and r["optimal_count"] == 2
+assert [[m["id"] for m in g["members"]] for g in r["groups"]] == [[1, 2], [3, 4]]
+
+# 10e. 只读：记录内容与时效状态不变，不产生新记录
+assert db.get_review(rid) == before
+assert db.get_review(rid_alias)["needs_recheck"] is True
+assert len(db.list_reviews()) == 3
+print("10. 共用标签模板分组（候选资格/并集模板/附加声明上限/子集DP/并列/禁止参与/只读） OK")
+
 print("\n全部集成冒烟测试通过 ✔")

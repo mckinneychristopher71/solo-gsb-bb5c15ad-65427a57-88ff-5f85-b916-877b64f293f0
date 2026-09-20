@@ -9,7 +9,7 @@
 - 支持两版配方对比，输出过敏原变化；
 - 生成并导出标签审查报告（HTML / Markdown）；
 - 临时预览工具：供应商方案风险区间、配料占比区间顺序校验、共线生产换线
-  排程（只读，不写历史、不改写审查记录）。
+  排程、共用标签模板分组（只读，不写历史、不改写审查记录）。
 """
 from __future__ import annotations
 
@@ -32,6 +32,9 @@ from .recheck import build_recheck
 from .report import render_html_report, render_markdown_report
 from .review import analyze
 from .supplier_risk import SupplierPlanError, analyze_supplier_risk
+from .template_group import (TemplateGroupError,
+                             build_template_group_preview,
+                             list_template_products)
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(BASE_DIR, "static")
@@ -98,6 +101,11 @@ class ProportionPreview(BaseModel):
 class ChangeoverPreview(BaseModel):
     review_ids: List[int]
     cleaning_minutes: Dict[str, float] = Field(default_factory=dict)
+
+
+class TemplateGroupPreview(BaseModel):
+    review_ids: List[int]
+    max_extra: Dict[str, int] = Field(default_factory=dict)
 
 
 # ---------- 页面 ----------
@@ -262,6 +270,40 @@ def changeover_schedule_preview(payload: ChangeoverPreview):
         return build_changeover_preview(
             payload.review_ids, payload.cleaning_minutes)
     except ChangeoverError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail={"message": str(exc), "problems": exc.problems})
+
+
+# ---------- 共用标签模板分组（临时预览） ----------
+
+@app.get("/api/template-group/products")
+def template_group_products():
+    """模板分组候选产品清单。
+
+    每条历史审查记录给出当前配方（两版记录取标签核对对象，即新版配方）
+    的最终过敏原集合与参与资格；处于需复核状态的记录标记为禁止参与并
+    附原因。只读，不改写任何数据。
+    """
+    return {"products": list_template_products()}
+
+
+@app.post("/api/template-group-preview")
+def template_group_preview(payload: TemplateGroupPreview):
+    """共用标签模板分组（临时预览）。
+
+    复用历史审查记录当前配方的最终过敏原集合：一组产品共用一张标签
+    模板（内容 = 组内过敏原并集），每个产品的附加声明为「模板含有而
+    自身没有」的过敏原，仅当组内每个产品的附加声明数都不超过其上限
+    （未配置的按 0 个计）时该组才成立；用子集动态规划求模板数量最少
+    的完整分组，模板数并列时按组内及组间产品 ID 序列取最小者，并返回
+    达到最少模板数的分组方案总数。记录缺失或处于需复核状态时禁止参与
+    并逐条指出原因。只读计算，不改写任何审查记录。
+    """
+    try:
+        return build_template_group_preview(
+            payload.review_ids, payload.max_extra)
+    except TemplateGroupError as exc:
         raise HTTPException(
             status_code=400,
             detail={"message": str(exc), "problems": exc.problems})

@@ -47,7 +47,7 @@ class ChangeoverError(ValueError):
         self.problems = problems or []
 
 
-def _blocked_message(reason: Optional[str]) -> str:
+def blocked_message(reason: Optional[str]) -> str:
     base = _RECHECK_REASONS.get(reason or "", "字典时效状态未知")
     return f"需复核（{base}），请先完成字典时效复核"
 
@@ -58,7 +58,7 @@ def _current_version(review: dict) -> dict:
     return result.get("version_b") or result.get("version_a") or {}
 
 
-def _product_of(review: dict) -> dict:
+def product_of(review: dict) -> dict:
     """从审查记录提取排程产品：ID、名称、取值版本与最终过敏原集合。"""
     result = review.get("result") or {}
     return {
@@ -78,11 +78,11 @@ def list_changeover_products() -> List[dict]:
         needs = bool(review.get("needs_recheck"))
         reason = review.get("recheck_reason")
         products.append({
-            **_product_of(review),
+            **product_of(review),
             "created_at": review["created_at"],
             "has_two_versions": bool(review.get("text_b")),
             "eligible": not needs,
-            "blocked_reason": _blocked_message(reason) if needs else None,
+            "blocked_reason": blocked_message(reason) if needs else None,
         })
     products.sort(key=lambda p: p["id"])
     return products
@@ -245,10 +245,10 @@ def build_changeover_preview(review_ids: List[int],
             problems.append({
                 "id": review["id"], "name": review["name"],
                 "reason": reason or "unknown",
-                "message": f"记录{_blocked_message(reason)}，禁止参与排程",
+                "message": f"记录{blocked_message(reason)}，禁止参与排程",
             })
             continue
-        products.append(_product_of(review))
+        products.append(product_of(review))
     if problems:
         raise ChangeoverError(
             f"所选产品中有 {len(problems)} 条记录禁止参与排程，请调整后重试",
