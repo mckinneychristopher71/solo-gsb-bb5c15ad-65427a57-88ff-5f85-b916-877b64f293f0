@@ -321,4 +321,83 @@ assert db.get_review(rid_alias)["needs_recheck"] is True
 assert len(db.list_reviews()) == 3
 print("9. 共线生产换线排程（候选资格/有向成本/子集DP/并列/禁止参与/只读） OK")
 
+# 10. 共用标签模板分组（临时预览，不改写审查记录）
+from app.label_group import (LabelGroupError, build_grouping,
+                             build_label_group_preview,
+                             list_label_group_products)
+
+# 10a. 候选产品清单：rid_alias 处于需复核状态，禁止参与并给出原因；
+#      两版记录取标签核对对象（新版配方）的最终过敏原集合
+products = list_label_group_products()
+by_id = {p["id"]: p for p in products}
+assert by_id[rid_alias]["eligible"] is False
+assert "需复核" in by_id[rid_alias]["blocked_reason"]
+assert by_id[rid]["eligible"] and by_id[old_rid]["eligible"]
+assert by_id[rid]["source_version"] == "新版配方"
+assert set(by_id[rid]["allergens"]) == {"麸质谷物", "坚果", "蛋类", "芝麻", "大豆"}
+
+# 10b. 纯计算：并集模板、附加声明上限、最少模板数与并列时组内/组间 ID 序列
+prods = [
+    {"id": 1, "name": "甲", "allergens": ["乳", "大豆"]},
+    {"id": 2, "name": "乙", "allergens": ["乳", "坚果"]},
+    {"id": 3, "name": "丙", "allergens": ["乳"]},
+]
+# 上限 0 时互不相容（乳/大豆 与 乳/坚果 互不包含），全部单组成模板
+r = build_grouping(prods, {1: 0, 2: 0, 3: 0})
+assert r["group_count"] == 3
+# 丙可并入甲或乙（各 1 个附加声明），最少 2 组；并列时
+# ((1,),(2,3)) < ((1,3),(2,))（首组 (1,) 为 (1,3) 的前缀）
+r = build_grouping(prods, {1: 0, 2: 0, 3: 1})
+assert r["group_count"] == 2
+assert tuple(tuple(m["id"] for m in g["members"]) for g in r["groups"]) == \
+    ((1,), (2, 3))
+g2 = r["groups"][1]
+assert g2["template"] == ["乳", "坚果"]
+m3 = next(m for m in g2["members"] if m["id"] == 3)
+assert m3["extra_allergens"] == ["坚果"] and m3["extra_count"] == 1
+assert m3["within_limit"] and m3["max_extra"] == 1
+
+# 10c. 全链路：缺失 / 需复核记录逐条拒绝
+try:
+    build_label_group_preview([
+        {"review_id": rid, "max_extra": 0},
+        {"review_id": rid_alias, "max_extra": 0}])
+    raise AssertionError("需复核记录应被拒绝")
+except LabelGroupError as exc:
+    assert exc.problems and exc.problems[0]["reason"] == "stale"
+    assert "需复核" in exc.problems[0]["message"]
+try:
+    build_label_group_preview([
+        {"review_id": rid, "max_extra": 0},
+        {"review_id": 999999, "max_extra": 0}])
+    raise AssertionError("缺失记录应被拒绝")
+except LabelGroupError as exc:
+    assert exc.problems[0]["reason"] == "missing"
+
+# 10d. 数量 / 上限校验
+try:
+    build_label_group_preview([{"review_id": rid, "max_extra": 0}])
+    raise AssertionError("少于 2 个产品应被拒绝")
+except LabelGroupError:
+    pass
+try:
+    build_label_group_preview([
+        {"review_id": rid, "max_extra": -1},
+        {"review_id": old_rid, "max_extra": 0}])
+    raise AssertionError("负上限应被拒绝")
+except LabelGroupError:
+    pass
+
+# 10e. 只读：记录内容与时效状态不变，不产生新记录
+before = db.get_review(rid)
+grp = build_label_group_preview([
+    {"review_id": old_rid, "max_extra": 1},
+    {"review_id": rid, "max_extra": 1}])
+assert grp["group_count"] >= 1
+assert all(m["within_limit"] for g in grp["groups"] for m in g["members"])
+assert db.get_review(rid) == before
+assert db.get_review(rid_alias)["needs_recheck"] is True
+assert len(db.list_reviews()) == 3
+print("10. 共用标签模板分组（并集模板/附加声明上限/子集DP/并列/逐条拒绝/只读） OK")
+
 print("\n全部集成冒烟测试通过 ✔")

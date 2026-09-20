@@ -102,7 +102,15 @@
                   gap: 6px 14px; margin-top: 6px; }
   .minutes-grid label { display: flex; align-items: center; justify-content: space-between;
                         gap: 8px; margin: 0; font-size: 13.5px; color: #333; }
-</style>
+  /* 共用标签模板分组 */
+  .lg-limit { width: 64px; padding: 4px 6px; border: 1px solid #c9d1d9;
+              border-radius: 6px; font-size: 13.5px; text-align: center; }
+  .lg-card { border: 1px solid #c9d1d9; border-radius: 8px; padding: 12px 14px;
+             margin: 10px 0; background: #fafbfc; }
+  .lg-card h4 { margin: 0 0 8px; font-size: 14px; color: #17457a; }
+  .lg-card table { margin-top: 6px; }
+  .lg-tpl { font-size: 13.5px; line-height: 2; }
+  .lg-summary { font-size: 13.5px; margin: 6px 0; }</style>
 </head>
 <body>
 <header>
@@ -226,7 +234,7 @@
     （两版记录取标签核对对象，即新版配方）的<b>最终过敏原集合</b>；为涉及的每种过敏原配置
     清洁分钟数后，按「前一产品含有、后一产品不含」计算<b>有向换线成本</b>，以子集动态规划求
     <b>总清洁时间最短</b>的完整生产顺序（并列时按产品 ID 序列取最小）。处于「需复核」状态的
-    记录<b>禁止参与</b>（原因见列表），请先在「⑧ 历史审查记录」完成字典时效复核。
+    记录<b>禁止参与</b>（原因见列表），请先在「⑨ 历史审查记录」完成字典时效复核。
     本预览<b>不会</b>改写任何审查记录。</p>
   <div id="changeover-products"><p class="hint">加载中…</p></div>
   <div id="changeover-minutes-wrap" class="hidden">
@@ -240,8 +248,25 @@
   <div id="changeover-result"></div>
 </section>
 
+<section>
+  <h2>⑦ 共用标签模板分组 <span class="pill gray">临时预览</span></h2>
+  <p class="hint">从历史审查记录中选择 <b>2～12 个时效正常</b>产品：系统复用各记录<b>当前配方</b>
+    （两版记录取标签核对对象，即新版配方）的<b>最终过敏原集合</b>，并为每个产品设置
+    <b>最多允许的附加声明数量</b>（共用模板上除该产品自身过敏原外最多额外标注的种数，预填 0）。
+    一组产品的<b>共用标签模板 = 组内过敏原并集</b>，仅当组内每个产品的附加声明数都不超限时
+    该组才可成组；后端用<b>子集动态规划</b>求<b>模板数量最少</b>的完整分组，模板数并列时按
+    <b>组内及组间产品 ID 序列</b>取唯一结果。缺失或处于「需复核」状态的记录<b>逐条拒绝</b>，
+    请先在「⑨ 历史审查记录」完成字典时效复核。本预览<b>只读</b>，不改写任何审查记录。</p>
+  <div id="label-group-products"><p class="hint">加载中…</p></div>
+  <div class="toolbar">
+    <button onclick="submitLabelGroup()">生成最少模板分组</button>
+    <span id="label-group-msg" class="error"></span>
+  </div>
+  <div id="label-group-result"></div>
+</section>
+
 <section id="result-section" class="hidden">
-  <h2>⑦ 审查结果 <span id="result-title" class="hint"></span></h2>
+  <h2>⑧ 审查结果 <span id="result-title" class="hint"></span></h2>
   <div id="recheck-bar"></div>
   <div id="recheck-panel" class="recheck-panel hidden"></div>
   <div id="result-body"></div>
@@ -252,7 +277,7 @@
 </section>
 
 <section>
-  <h2>⑧ 历史审查记录</h2>
+  <h2>⑨ 历史审查记录</h2>
   <div id="history-table"><p class="hint">暂无记录</p></div>
 </section>
 
@@ -562,6 +587,7 @@ async function loadHistory() {
   if (!reviews.length) {
     $('history-table').innerHTML = '<p class="hint">暂无记录</p>';
     await loadChangeoverProducts();  // 换线排程候选列表随记录变化一并刷新
+    await loadLabelGroupProducts();  // 标签模板分组候选列表一并刷新
     return;
   }
   const rows = reviews.map(r => {
@@ -588,6 +614,7 @@ async function loadHistory() {
   $('history-table').innerHTML =
     `<table><tr><th>ID</th><th>名称</th><th>类型</th><th>结论</th><th>字典时效</th><th>时间</th><th>操作</th></tr>${rows}</table>`;
   await loadChangeoverProducts();  // 换线排程候选列表随记录 / 字典时效变化一并刷新
+  await loadLabelGroupProducts();  // 标签模板分组候选列表一并刷新
 }
 
 async function viewReview(id) {
@@ -1110,6 +1137,153 @@ function renderChangeoverResult(r) {
     <p class="hint">首产产品无换线清洁；换线成本按「前一产品含有、后一产品不含」的过敏原
       清洁分钟数求和。本结果仅为预览，未改写任何审查记录。</p></div>`;
   $('changeover-result').scrollIntoView({behavior: 'smooth'});
+}
+
+/* ---------- 共用标签模板分组（临时预览） ---------- */
+let labelGroupProducts = [];
+let labelGroupSelected = new Set();
+let labelGroupLimits = {};   // 产品 ID -> 附加声明上限输入值（跨渲染保留）
+const LABEL_GROUP_DEFAULT_MAX_EXTRA = 0;
+
+async function loadLabelGroupProducts() {
+  try {
+    const d = await api('/api/label-group/products');
+    labelGroupProducts = d.products;
+    renderLabelGroupProducts();
+  } catch (e) {
+    $('label-group-products').innerHTML =
+      `<p class="error">候选产品加载失败：${esc(e.message)}</p>`;
+  }
+}
+
+function renderLabelGroupProducts() {
+  const wrap = $('label-group-products');
+  if (!labelGroupProducts.length) {
+    wrap.innerHTML = '<p class="hint">暂无历史审查记录，请先在「③ 新建标签审查」创建。</p>';
+    return;
+  }
+  // 仅保留仍然存在且可参与的勾选
+  const eligible = new Set(labelGroupProducts.filter(p => p.eligible).map(p => p.id));
+  labelGroupSelected = new Set([...labelGroupSelected].filter(id => eligible.has(id)));
+  const rows = labelGroupProducts.map(p => {
+    const allergens = p.allergens.length
+      ? p.allergens.map(a => `<span class="badge">${esc(a)}</span>`).join('')
+      : '<span class="hint">无过敏原</span>';
+    const checked = labelGroupSelected.has(p.id);
+    const cb = p.eligible
+      ? `<input type="checkbox" value="${p.id}" ${checked ? 'checked' : ''} onchange="onLabelGroupSelect()">`
+      : `<input type="checkbox" disabled title="${esc(p.blocked_reason)}">`;
+    const limit = p.eligible
+      ? `<input type="number" min="0" step="1" class="lg-limit" data-product="${p.id}"
+          ${checked ? '' : 'disabled'}
+          value="${esc(String(labelGroupLimits[p.id] !== undefined
+            ? labelGroupLimits[p.id] : LABEL_GROUP_DEFAULT_MAX_EXTRA))}">`
+      : '<span class="hint">—</span>';
+    const state = p.eligible
+      ? '<span class="pill green" title="字典时效正常">可参与</span>'
+      : `<span class="pill orange" title="${esc(p.blocked_reason)}">禁止参与</span>`;
+    const note = p.eligible ? '' : `<div class="warn">⚠ ${esc(p.blocked_reason)}</div>`;
+    return `<tr><td>${cb}</td><td>#${p.id}</td><td>${esc(p.name)}${note}</td>
+      <td class="hint">${esc(p.source_version)}</td><td>${allergens}</td>
+      <td style="text-align:center">${limit}</td><td>${state}</td></tr>`;
+  }).join('');
+  wrap.innerHTML = `<table><tr><th style="width:40px">选择</th><th style="width:3.5em">ID</th>
+    <th>产品（审查记录）</th><th style="width:6.5em">取值版本</th>
+    <th>当前配方最终过敏原集合</th><th style="width:7.5em">附加声明上限</th>
+    <th style="width:5.5em">状态</th></tr>${rows}</table>
+    <p class="hint">已选 <b id="label-group-count">${labelGroupSelected.size}</b> 个（需 2～12 个）；
+      「附加声明上限」为该产品共用模板上除自身过敏原外最多额外标注的过敏原种数；
+      「取值版本」为记录的标签核对对象（两版记录即新版配方）。</p>`;
+}
+
+function onLabelGroupSelect() {
+  labelGroupSelected = new Set(
+    [...document.querySelectorAll('#label-group-products input[type=checkbox]:checked')]
+      .map(i => Number(i.value)));
+  const cnt = $('label-group-count');
+  if (cnt) cnt.textContent = labelGroupSelected.size;
+  renderLabelGroupProducts();
+}
+
+function captureLabelGroupLimits() {
+  document.querySelectorAll('#label-group-products input.lg-limit').forEach(i => {
+    labelGroupLimits[Number(i.dataset.product)] = i.value;
+  });
+}
+
+async function submitLabelGroup() {
+  $('label-group-msg').textContent = '';
+  $('label-group-result').innerHTML = '';
+  captureLabelGroupLimits();
+  const ids = [...labelGroupSelected];
+  if (ids.length < 2 || ids.length > 12) {
+    $('label-group-msg').textContent = `请选择 2～12 个产品（当前 ${ids.length} 个）`;
+    return;
+  }
+  const items = [];
+  for (const id of ids) {
+    const raw = labelGroupLimits[id];
+    const v = Number(raw);
+    if (raw === undefined || String(raw).trim() === '' || !Number.isInteger(v) || v < 0) {
+      $('label-group-msg').textContent =
+        `产品 #${id} 的附加声明上限无效（需为不小于 0 的整数）`;
+      return;
+    }
+    items.push({review_id: id, max_extra: v});
+  }
+  try {
+    const r = await post('/api/label-group-preview', {items});
+    renderLabelGroupResult(r);
+  } catch (e) {
+    const problems = (e.detail && e.detail.problems) || [];
+    $('label-group-msg').textContent = e.message;
+    if (problems.length) {
+      $('label-group-result').innerHTML = `<div class="result-block"><h3>禁止参与的记录</h3>
+        <table><tr><th style="width:4em">ID</th><th>产品</th><th>原因</th></tr>
+        ${problems.map(p => `<tr><td>#${esc(String(p.id))}</td>
+          <td>${esc(p.name || '（未知）')}</td>
+          <td class="error">${esc(p.message)}</td></tr>`).join('')}</table></div>`;
+    }
+    await loadLabelGroupProducts();  // 刷新资格状态（记录可能刚被复核或删除）
+  }
+}
+
+function renderLabelGroupResult(r) {
+  const cards = r.groups.map(g => {
+    const template = g.template.length
+      ? g.template.map(a => `<span class="badge ok">${esc(a)}</span>`).join('')
+      : '<span class="hint">空模板（组内产品均无过敏原）</span>';
+    const rows = g.members.map(m => {
+      const own = m.allergens.length
+        ? m.allergens.map(a => `<span class="badge own">${esc(a)}</span>`).join('')
+        : '<span class="hint">无</span>';
+      const extra = m.extra_allergens.length
+        ? m.extra_allergens.map(a => `<span class="badge over">${esc(a)}</span>`).join('')
+        : '<span class="hint">无附加声明</span>';
+      return `<tr><td>#${m.id}</td><td>${esc(m.name)}</td>
+        <td class="hint">${esc(m.source_version)}</td><td>${own}</td>
+        <td>${extra}</td>
+        <td>${m.extra_count} / ${m.max_extra}
+          ${m.within_limit ? '<span class="pill green">未超限</span>'
+                           : '<span class="pill red">超限</span>'}</td></tr>`;
+    }).join('');
+    return `<div class="lg-card"><h4>模板 ${g.index}
+        <span class="pill blue">${g.template_count} 种过敏原</span>
+        <span class="hint">成员 ${g.members.length} 个</span></h4>
+      <div class="lg-tpl"><b>共用标签模板（组内过敏原并集）：</b>${template}</div>
+      <table><tr><th style="width:4em">ID</th><th>成员产品</th><th style="width:6.5em">取值版本</th>
+        <th>自身过敏原</th><th>附加声明（模板 − 自身）</th><th style="width:9em">附加数 / 上限</th>
+      </tr>${rows}</table></div>`;
+  }).join('');
+  $('label-group-result').innerHTML = `<div class="result-block">
+    <h3>最少模板分组 <span class="pill green">${r.group_count} 个共用模板</span>
+      <span class="pill gray">${r.products.length} 个产品</span></h3>
+    <p class="lg-summary">每组模板为组内产品过敏原并集；仅当组内每个产品的附加声明数都不超过
+      各自上限时才可成组。模板数并列时，组内成员按产品 ID 升序、组间按各组产品 ID 序列
+      字典序比较，取唯一分组。</p>
+    ${cards}
+    <p class="hint">本结果仅为临时预览，未改写任何审查记录。</p></div>`;
+  $('label-group-result').scrollIntoView({behavior: 'smooth'});
 }
 
 /* ---------- 示例 ---------- */

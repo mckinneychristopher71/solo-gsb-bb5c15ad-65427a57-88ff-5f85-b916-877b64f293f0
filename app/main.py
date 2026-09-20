@@ -9,7 +9,7 @@
 - 支持两版配方对比，输出过敏原变化；
 - 生成并导出标签审查报告（HTML / Markdown）；
 - 临时预览工具：供应商方案风险区间、配料占比区间顺序校验、共线生产换线
-  排程（只读，不写历史、不改写审查记录）。
+  排程、共用标签模板分组（只读，不写历史、不改写审查记录）。
 """
 from __future__ import annotations
 
@@ -26,6 +26,8 @@ from .aliases import resolve_preview, validate_alias_batch
 from .analysis import flatten, normalize_name
 from .changeover import (ChangeoverError, build_changeover_preview,
                          list_changeover_products)
+from .label_group import (LabelGroupError, build_label_group_preview,
+                          list_label_group_products)
 from .parser import parse_recipe
 from .proportion import analyze_proportions
 from .recheck import build_recheck
@@ -98,6 +100,16 @@ class ProportionPreview(BaseModel):
 class ChangeoverPreview(BaseModel):
     review_ids: List[int]
     cleaning_minutes: Dict[str, float] = Field(default_factory=dict)
+
+
+class LabelGroupItem(BaseModel):
+    review_id: int
+    # 该产品在共用模板下最多允许的附加声明数量（模板并集 − 自身过敏原）
+    max_extra: int = 0
+
+
+class LabelGroupPreview(BaseModel):
+    items: List[LabelGroupItem]
 
 
 # ---------- 页面 ----------
@@ -262,6 +274,39 @@ def changeover_schedule_preview(payload: ChangeoverPreview):
         return build_changeover_preview(
             payload.review_ids, payload.cleaning_minutes)
     except ChangeoverError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail={"message": str(exc), "problems": exc.problems})
+
+
+# ---------- 共用标签模板分组（临时预览） ----------
+
+@app.get("/api/label-group/products")
+def label_group_products():
+    """标签模板分组候选产品清单。
+
+    每条历史审查记录给出当前配方（两版记录取标签核对对象，即新版配方）
+    的最终过敏原集合与参与资格；处于需复核状态的记录标记为禁止参与并
+    附原因。只读，不改写任何数据。
+    """
+    return {"products": list_label_group_products()}
+
+
+@app.post("/api/label-group-preview")
+def label_group_preview(payload: LabelGroupPreview):
+    """共用标签模板分组（临时预览）。
+
+    复用历史审查记录当前配方的最终过敏原集合：一组产品的共用标签模板
+    定义为组内过敏原并集，仅当组内每个产品的附加声明数（并集 − 自身
+    过敏原）不超过各自上限时该组可成组；用子集动态规划求模板数量最少
+    的完整分组，模板数并列时按组内及组间产品 ID 序列取唯一结果。记录
+    缺失或处于需复核状态时禁止参与并逐条指出原因。只读计算，不改写
+    任何审查记录。
+    """
+    try:
+        return build_label_group_preview(
+            [item.model_dump() for item in payload.items])
+    except LabelGroupError as exc:
         raise HTTPException(
             status_code=400,
             detail={"message": str(exc), "problems": exc.problems})
